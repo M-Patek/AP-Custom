@@ -1,0 +1,7 @@
+cd Desktop\antigravity-proxy
+npm start
+claude
+
+cd Desktop\test-code
+
+npm run accounts:add
