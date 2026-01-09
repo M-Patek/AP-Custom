@@ -12,6 +12,7 @@ import { REQUEST_BODY_LIMIT } from './constants.js';
 import { AccountManager } from './account-manager/index.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger } from './utils/logger.js';
+import path from 'path';
 
 // Parse fallback flag directly from command line args to avoid circular dependency
 const args = process.argv.slice(2);
@@ -56,6 +57,9 @@ async function ensureInitialized() {
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
+
+// [Modified] Serve static files from 'public' directory
+app.use(express.static('public'));
 
 /**
  * Parse error message to extract error type, status code, and user-friendly message
@@ -668,6 +672,12 @@ app.post('/v1/messages', async (req, res) => {
  * Catch-all for unsupported endpoints
  */
 app.use('*', (req, res) => {
+    // Check if it's a request for an HTML page that doesn't exist (SPA support fallback if needed, or just 404)
+    if (req.accepts('html')) {
+        // If we had a true SPA with client-side routing, we might serve index.html here.
+        // For now, standard 404 is fine for non-existent pages.
+    }
+
     if (logger.isDebugEnabled) {
         logger.debug(`[API] 404 Not Found: ${req.method} ${req.originalUrl}`);
     }
