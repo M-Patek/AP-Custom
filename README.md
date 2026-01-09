@@ -1,4 +1,4 @@
-# Antigravity Claude Proxy (Highly Customized)
+# Antigravity Claude Proxy (Customized)
 
 > **Note**: This project is a highly customized version based on the original work at [antigravity-claude-proxy](https://github.com/badrisnarayanan/antigravity-claude-proxy). It includes enhanced startup logic, specific model mappings for Gemini 3/Claude 4.5, and improved native module handling.
 
