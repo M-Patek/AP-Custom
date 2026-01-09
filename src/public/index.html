@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity 控制中心</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-orange: #f59e0b;
+            --accent-blue: #3b82f6;
+            --border-color: #334155;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* 顶部状态栏 */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            text-align: center;
+            transition: transform 0.2s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 5px;
+            line-height: 1.2;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-weight: 600;
+        }
+
+        /* 账号列表 */
+        .accounts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .account-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .account-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+            border-color: var(--text-secondary);
+        }
+
+        .account-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .email {
+            font-weight: 600;
+            font-size: 1.05rem;
+            word-break: break-all;
+            color: var(--text-primary);
+        }
+
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+            margin-left: 10px;
+        }
+
+        .badge-ok { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .badge-warn { background: rgba(245, 158, 11, 0.15); color: var(--accent-orange); border: 1px solid rgba(245, 158, 11, 0.3); }
+        .badge-error { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); }
+
+        /* 额度条 */
+        .model-limit {
+            margin-top: 15px;
+        }
+
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .progress-bg {
+            height: 6px;
+            background: #334155;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .cooldown-text {
+            font-size: 0.8rem;
+            color: var(--accent-orange);
+            margin-top: 4px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            font-weight: 500;
+        }
+
+        /* 按钮 */
+        .btn {
+            background: var(--accent-blue);
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.3);
+        }
+        .btn:hover { 
+            background: #2563eb; 
+            transform: translateY(-1px);
+        }
+        .btn:active { transform: translateY(0); }
+        .btn:disabled { 
+            opacity: 0.6; 
+            cursor: not-allowed; 
+            background: var(--text-secondary);
+            transform: none;
+            box-shadow: none;
+        }
+
+        .last-updated {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 5px;
+            font-variant-numeric: tabular-nums;
+        }
+        
+        .loading {
+             text-align: center;
+             padding: 60px;
+             color: var(--text-secondary);
+             font-size: 1.1rem;
+             grid-column: 1 / -1;
+             background: var(--card-bg);
+             border-radius: 12px;
+             border: 1px dashed var(--border-color);
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-radius: 50%;
+            border-top-color: var(--accent-blue);
+            animation: spin 1s ease-in-out infinite;
+            margin-bottom: 15px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Model Name formatting */
+        .model-name {
+            font-family: monospace;
+            background: rgba(0,0,0,0.2);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>Antigravity 控制中心 🚀</h1>
+                <div class="last-updated" id="lastUpdated">等待连接主机...</div>
+            </div>
+            <button class="btn" onclick="refreshToken()" id="refreshBtn">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                强制刷新 Token
+            </button>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="totalCount">-</div>
+                <div class="stat-label">总账号池</div>
+            </div>
+            <div class="stat-card" style="border-top: 4px solid var(--accent-green)">
+                <div class="stat-value" id="availableCount" style="color: var(--accent-green)">-</div>
+                <div class="stat-label">状态良好</div>
+            </div>
+            <div class="stat-card" style="border-top: 4px solid var(--accent-orange)">
+                <div class="stat-value" id="limitedCount" style="color: var(--accent-orange)">-</div>
+                <div class="stat-label">冷却/限流中</div>
+            </div>
+             <div class="stat-card" style="border-top: 4px solid var(--accent-red)">
+                <div class="stat-value" id="invalidCount" style="color: var(--accent-red)">-</div>
+                <div class="stat-label">失效需维护</div>
+            </div>
+        </div>
+
+        <div id="accountsContainer" class="accounts-grid">
+            <div class="loading">
+                <div class="loading-spinner"></div><br>
+                正在连接 Antigravity 主机，请稍候喵...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 自动刷新间隔 (毫秒)
+        const REFRESH_INTERVAL = 10000;
+        let isUpdating = false;
+
+        // [新增] 自动检测 API 地址
+        // 如果是在本地开发环境(localhost)或者是预览环境(blob/file)，默认指向本地服务器端口 8080
+        const getApiBaseUrl = () => {
+            const protocol = window.location.protocol;
+            if (protocol === 'blob:' || protocol === 'file:' || window.location.hostname.includes('usercontent.goog')) {
+                // 在预览环境中，我们假设后端服务运行在标准的 localhost:8080
+                return 'http://localhost:8080';
+            }
+            return ''; // 否则使用相对路径
+        };
+        const API_BASE_URL = getApiBaseUrl();
+
+        async function fetchLimits() {
+            if (isUpdating) return;
+            isUpdating = true;
+            
+            try {
+                // 使用计算好的 Base URL 发起请求
+                const response = await fetch(`${API_BASE_URL}/account-limits?format=json`);
+                const data = await response.json();
+                renderDashboard(data);
+                
+                const now = new Date();
+                document.getElementById('lastUpdated').textContent = `上次更新: ${now.toLocaleTimeString()}`;
+            } catch (error) {
+                console.error('Fetch failed:', error);
+                document.getElementById('lastUpdated').textContent = `更新失败: ${error.message}. 请确保后台服务已在端口 8080 启动。`;
+            } finally {
+                isUpdating = false;
+            }
+        }
+
+        async function refreshToken() {
+            const btn = document.getElementById('refreshBtn');
+            const originalText = btn.innerHTML;
+            
+            try {
+                btn.disabled = true;
+                btn.innerHTML = '刷新中...';
+                
+                const response = await fetch(`${API_BASE_URL}/refresh-token`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'ok') {
+                    // Use a simple toast or alert
+                    const toast = document.createElement('div');
+                    toast.textContent = 'Token 缓存已清除并刷新喵！';
+                    toast.style.cssText = 'position: fixed; bottom: 20px; right: 20px; background: var(--accent-green); color: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000; animation: slideIn 0.3s ease-out;';
+                    document.body.appendChild(toast);
+                    setTimeout(() => toast.remove(), 3000);
+                    
+                    fetchLimits(); // 立即刷新数据
+                } else {
+                    alert('刷新失败: ' + result.error);
+                }
+            } catch (error) {
+                alert('网络错误: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        }
+
+        function renderDashboard(data) {
+            // 更新统计卡片
+            let available = 0;
+            let limited = 0;
+            let invalid = 0;
+
+            const container = document.getElementById('accountsContainer');
+            // 清空旧内容，但为了体验，可以在 diff 后更新（这里简化为重绘）
+            container.innerHTML = '';
+
+            data.accounts.forEach(acc => {
+                // 计算状态
+                // 只要有一个 invalid 就认为是 invalid
+                let isAccountInvalid = acc.status === 'invalid' || acc.status === 'error';
+                
+                // 判断是否 limited: status 不是 ok 且不是 invalid，或者 limits 里有 0%
+                let isAccountLimited = false;
+                if (!isAccountInvalid) {
+                     if (acc.status !== 'ok') {
+                         isAccountLimited = true;
+                     } else {
+                         // 检查是否所有模型都耗尽
+                         const limits = Object.values(acc.limits || {});
+                         if (limits.length > 0 && limits.every(l => l && (l.remainingFraction === 0 || l.remainingFraction === null))) {
+                             isAccountLimited = true;
+                         }
+                     }
+                }
+
+                if (isAccountInvalid) invalid++;
+                else if (isAccountLimited) limited++;
+                else available++;
+
+                const card = document.createElement('div');
+                card.className = 'account-card';
+                
+                // 状态徽章
+                let badgeClass = 'badge-ok';
+                let badgeText = '正常';
+                if (isAccountInvalid) {
+                    badgeClass = 'badge-error';
+                    badgeText = '失效/错误';
+                    card.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+                } else if (isAccountLimited) {
+                    badgeClass = 'badge-warn';
+                    badgeText = '受限 / 冷却';
+                    card.style.borderColor = 'rgba(245, 158, 11, 0.3)';
+                }
+
+                // 构建 HTML
+                let modelsHtml = '';
+                const models = acc.limits || {};
+                
+                // 对模型排序，把 Claude 放在前面，Gemini 放后面
+                const modelKeys = Object.keys(models).sort((a, b) => {
+                    if (a.includes('claude') && !b.includes('claude')) return -1;
+                    if (!a.includes('claude') && b.includes('claude')) return 1;
+                    return a.localeCompare(b);
+                });
+
+                if (modelKeys.length === 0 && !acc.error) {
+                    modelsHtml = '<div style="color:var(--text-secondary); font-size:0.8rem; padding:10px 0;">暂无配额数据</div>';
+                }
+
+                modelKeys.forEach(modelName => {
+                    const quota = models[modelName];
+                    if (!quota) return;
+
+                    const percent = quota.remainingFraction !== null 
+                        ? Math.round(quota.remainingFraction * 100) 
+                        : 0;
+                    
+                    let barColor = 'var(--accent-green)';
+                    if (percent < 30) barColor = 'var(--accent-orange)';
+                    if (percent === 0) barColor = 'var(--accent-red)';
+                    
+                    // 冷却倒计时逻辑
+                    let cooldownHtml = '';
+                    if (quota.resetTime) {
+                        const resetDate = new Date(quota.resetTime);
+                        const now = new Date();
+                        const diffMs = resetDate - now;
+                        
+                        if (diffMs > 0) {
+                            const minutes = Math.floor(diffMs / 60000);
+                            const seconds = Math.floor((diffMs % 60000) / 1000);
+                            cooldownHtml = `<div class="cooldown-text">冷却中: ${minutes}分 ${seconds}秒</div>`;
+                        } else if (percent === 0) {
+                            cooldownHtml = `<div class="cooldown-text" style="color:var(--text-secondary)">即将重置...</div>`;
+                        }
+                    } else if (percent === 0) {
+                         cooldownHtml = `<div class="cooldown-text" style="color:var(--accent-red)">额度耗尽</div>`;
+                    }
+
+                    modelsHtml += `
+                        <div class="model-limit">
+                            <div class="model-header">
+                                <span class="model-name">${modelName.split('/').pop()}</span>
+                                <span>${percent}%</span>
+                            </div>
+                            <div class="progress-bg">
+                                <div class="progress-bar" style="width: ${percent}%; background: ${barColor}"></div>
+                            </div>
+                            ${cooldownHtml}
+                        </div>
+                    `;
+                });
+
+                // 错误信息显示
+                let errorHtml = '';
+                if (acc.error) {
+                    errorHtml = `<div style="background: rgba(239, 68, 68, 0.1); color: var(--accent-red); font-size: 0.8rem; margin-top: 15px; padding: 10px; border-radius: 6px; border: 1px solid rgba(239, 68, 68, 0.2);">⚠️ ${acc.error}</div>`;
+                }
+
+                // 截取邮箱前缀，如果太长
+                let displayEmail = acc.email;
+                if (displayEmail.length > 35) {
+                    displayEmail = displayEmail.substring(0, 32) + '...';
+                }
+
+                card.innerHTML = `
+                    <div class="account-header">
+                        <div class="email" title="${acc.email}">${displayEmail}</div>
+                        <span class="badge ${badgeClass}">${badgeText}</span>
+                    </div>
+                    ${modelsHtml}
+                    ${errorHtml}
+                `;
+                container.appendChild(card);
+            });
+
+            // 更新顶部数字
+            animateValue("totalCount", parseInt(document.getElementById("totalCount").innerText) || 0, data.accounts.length, 500);
+            document.getElementById('availableCount').textContent = available;
+            document.getElementById('limitedCount').textContent = limited;
+            document.getElementById('invalidCount').textContent = invalid;
+        }
+        
+        // 简单的数字滚动动画
+        function animateValue(id, start, end, duration) {
+            if (start === end) return;
+            const obj = document.getElementById(id);
+            if(end === "-") { obj.innerHTML = "-"; return; }
+            let startTimestamp = null;
+            const step = (timestamp) => {
+                if (!startTimestamp) startTimestamp = timestamp;
+                const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+                obj.innerHTML = Math.floor(progress * (end - start) + start);
+                if (progress < 1) {
+                    window.requestAnimationFrame(step);
+                }
+            };
+            window.requestAnimationFrame(step);
+        }
+
+        // 启动
+        fetchLimits();
+        setInterval(fetchLimits, REFRESH_INTERVAL);
+        
+        // 添加全局动画样式
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateY(100%); opacity: 0; }
+                to { transform: translateY(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html>
