@@ -1,237 +1,201 @@
 /**
- * Rate Limit Management
+ * Account Selection
  *
- * Handles rate limit tracking and state management for accounts.
- * All rate limits are model-specific.
+ * Handles account picking logic (round-robin, sticky) for cache continuity.
+ * All rate limit checks are model-specific.
  */
 
-import { DEFAULT_COOLDOWN_MS } from '../constants.js';
+import { MAX_WAIT_BEFORE_ERROR_MS } from '../constants.js';
 import { formatDuration } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
+import { clearExpiredLimits, getAvailableAccounts } from './rate-limits.js';
 
 /**
- * Check if all accounts are rate-limited for a specific model
- *
- * @param {Array} accounts - Array of account objects
- * @param {string} modelId - Model ID to check rate limits for
- * @returns {boolean} True if all accounts are rate-limited
+ * Check if an account is usable for a specific model
+ * @param {Object} account - Account object
+ * @param {string} modelId - Model ID to check
+ * @returns {boolean} True if account is usable
  */
-export function isAllRateLimited(accounts, modelId) {
-    if (accounts.length === 0) return true;
-    if (!modelId) return false; // No model specified = not rate limited
+function isAccountUsable(account, modelId) {
+    if (!account || account.isInvalid) return false;
 
-    return accounts.every(acc => {
-        if (acc.isInvalid) return true; // Invalid accounts count as unavailable
-        if (acc.enabled === false) return true; // Disabled accounts count as unavailable
-        const modelLimits = acc.modelRateLimits || {};
-        const limit = modelLimits[modelId];
-        return limit && limit.isRateLimited && limit.resetTime > Date.now();
-    });
-}
+    // WebUI: Skip disabled accounts
+    if (account.enabled === false) return false;
 
-/**
- * Get list of available (non-rate-limited, non-invalid) accounts for a model
- *
- * @param {Array} accounts - Array of account objects
- * @param {string} [modelId] - Model ID to filter by
- * @returns {Array} Array of available account objects
- */
-export function getAvailableAccounts(accounts, modelId = null) {
-    return accounts.filter(acc => {
-        if (acc.isInvalid) return false;
-
-        // WebUI: Skip disabled accounts
-        if (acc.enabled === false) return false;
-
-        if (modelId && acc.modelRateLimits && acc.modelRateLimits[modelId]) {
-            const limit = acc.modelRateLimits[modelId];
-            if (limit.isRateLimited && limit.resetTime > Date.now()) {
-                return false;
-            }
+    if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
+        const limit = account.modelRateLimits[modelId];
+        if (limit.isRateLimited && limit.resetTime > Date.now()) {
+            return false;
         }
-
-        return true;
-    });
-}
-
-/**
- * Get list of invalid accounts
- *
- * @param {Array} accounts - Array of account objects
- * @returns {Array} Array of invalid account objects
- */
-export function getInvalidAccounts(accounts) {
-    return accounts.filter(acc => acc.isInvalid);
-}
-
-/**
- * Clear expired rate limits
- *
- * @param {Array} accounts - Array of account objects
- * @returns {number} Number of rate limits cleared
- */
-export function clearExpiredLimits(accounts) {
-    const now = Date.now();
-    let cleared = 0;
-
-    for (const account of accounts) {
-        if (account.modelRateLimits) {
-            for (const [modelId, limit] of Object.entries(account.modelRateLimits)) {
-                if (limit.isRateLimited && limit.resetTime <= now) {
-                    limit.isRateLimited = false;
-                    limit.resetTime = null;
-                    cleared++;
-                    logger.success(`[AccountManager] Rate limit expired for: ${account.email} (model: ${modelId})`);
-                }
-            }
-        }
-    }
-
-    return cleared;
-}
-
-/**
- * Clear all rate limits to force a fresh check (optimistic retry strategy)
- *
- * @param {Array} accounts - Array of account objects
- */
-export function resetAllRateLimits(accounts) {
-    for (const account of accounts) {
-        if (account.modelRateLimits) {
-            for (const key of Object.keys(account.modelRateLimits)) {
-                account.modelRateLimits[key] = { isRateLimited: false, resetTime: null };
-            }
-        }
-    }
-    logger.warn('[AccountManager] Reset all rate limits for optimistic retry');
-}
-
-/**
- * Mark an account as rate-limited for a specific model
- *
- * @param {Array} accounts - Array of account objects
- * @param {string} email - Email of the account to mark
- * @param {number|null} resetMs - Time in ms until rate limit resets (from API)
- * @param {string} modelId - Model ID to mark rate limit for
- * @returns {boolean} True if account was found and marked
- */
-export function markRateLimited(accounts, email, resetMs = null, modelId) {
-    const account = accounts.find(a => a.email === email);
-    if (!account) return false;
-
-    // Store the ACTUAL reset time from the API
-    // This is used to decide whether to wait (short) or switch accounts (long)
-    const actualResetMs = (resetMs && resetMs > 0) ? resetMs : DEFAULT_COOLDOWN_MS;
-
-    if (!account.modelRateLimits) {
-        account.modelRateLimits = {};
-    }
-
-    account.modelRateLimits[modelId] = {
-        isRateLimited: true,
-        resetTime: Date.now() + actualResetMs,  // Actual reset time for decisions
-        actualResetMs: actualResetMs             // Original duration from API
-    };
-
-    // Log appropriately based on duration
-    if (actualResetMs > DEFAULT_COOLDOWN_MS) {
-        logger.warn(
-            `[AccountManager] Quota exhausted: ${email} (model: ${modelId}). Resets in ${formatDuration(actualResetMs)}`
-        );
-    } else {
-        logger.warn(
-            `[AccountManager] Rate limited: ${email} (model: ${modelId}). Available in ${formatDuration(actualResetMs)}`
-        );
     }
 
     return true;
 }
 
 /**
- * Mark an account as invalid (credentials need re-authentication)
+ * Pick the next available account (fallback when current is unavailable).
  *
  * @param {Array} accounts - Array of account objects
- * @param {string} email - Email of the account to mark
- * @param {string} reason - Reason for marking as invalid
- * @returns {boolean} True if account was found and marked
+ * @param {number} currentIndex - Current account index
+ * @param {Function} onSave - Callback to save changes
+ * @param {string} [modelId] - Model ID to check rate limits for
+ * @returns {{account: Object|null, newIndex: number}} The next available account and new index
  */
-export function markInvalid(accounts, email, reason = 'Unknown error') {
-    const account = accounts.find(a => a.email === email);
-    if (!account) return false;
+export function pickNext(accounts, currentIndex, onSave, modelId = null) {
+    clearExpiredLimits(accounts);
 
-    account.isInvalid = true;
-    account.invalidReason = reason;
-    account.invalidAt = Date.now();
+    const available = getAvailableAccounts(accounts, modelId);
+    if (available.length === 0) {
+        return { account: null, newIndex: currentIndex };
+    }
 
-    logger.error(
-        `[AccountManager] ⚠ Account INVALID: ${email}`
-    );
-    logger.error(
-        `[AccountManager]   Reason: ${reason}`
-    );
-    logger.error(
-        `[AccountManager]   Run 'npm run accounts' to re-authenticate this account`
-    );
+    // Clamp index to valid range
+    let index = currentIndex;
+    if (index >= accounts.length) {
+        index = 0;
+    }
 
-    return true;
-}
+    // Find next available account starting from index AFTER current
+    for (let i = 1; i <= accounts.length; i++) {
+        const idx = (index + i) % accounts.length;
+        const account = accounts[idx];
 
-/**
- * Get the minimum wait time until any account becomes available for a model
- *
- * @param {Array} accounts - Array of account objects
- * @param {string} modelId - Model ID to check
- * @returns {number} Wait time in milliseconds
- */
-export function getMinWaitTimeMs(accounts, modelId) {
-    if (!isAllRateLimited(accounts, modelId)) return 0;
+        if (isAccountUsable(account, modelId)) {
+            account.lastUsed = Date.now();
 
-    const now = Date.now();
-    let minWait = Infinity;
-    let soonestAccount = null;
+            const position = idx + 1;
+            const total = accounts.length;
+            logger.info(`[AccountManager] Using account: ${account.email} (${position}/${total})`);
 
-    for (const account of accounts) {
-        if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
-            const limit = account.modelRateLimits[modelId];
-            if (limit.isRateLimited && limit.resetTime) {
-                const wait = limit.resetTime - now;
-                if (wait > 0 && wait < minWait) {
-                    minWait = wait;
-                    soonestAccount = account;
-                }
-            }
+            // Trigger save (don't await to avoid blocking)
+            if (onSave) onSave();
+
+            return { account, newIndex: idx };
         }
     }
 
-    if (soonestAccount) {
-        logger.info(`[AccountManager] Shortest wait: ${formatDuration(minWait)} (account: ${soonestAccount.email})`);
-    }
-
-    return minWait === Infinity ? DEFAULT_COOLDOWN_MS : minWait;
+    return { account: null, newIndex: currentIndex };
 }
 
 /**
- * Get the rate limit info for a specific account and model
- * Returns the actual reset time from API, not capped
+ * Get the current account without advancing the index (sticky selection).
  *
  * @param {Array} accounts - Array of account objects
- * @param {string} email - Email of the account
- * @param {string} modelId - Model ID to check
- * @returns {{isRateLimited: boolean, actualResetMs: number|null, waitMs: number}} Rate limit info
+ * @param {number} currentIndex - Current account index
+ * @param {Function} onSave - Callback to save changes
+ * @param {string} [modelId] - Model ID to check rate limits for
+ * @returns {{account: Object|null, newIndex: number}} The current account and index
  */
-export function getRateLimitInfo(accounts, email, modelId) {
-    const account = accounts.find(a => a.email === email);
-    if (!account || !account.modelRateLimits || !account.modelRateLimits[modelId]) {
-        return { isRateLimited: false, actualResetMs: null, waitMs: 0 };
+export function getCurrentStickyAccount(accounts, currentIndex, onSave, modelId = null) {
+    clearExpiredLimits(accounts);
+
+    if (accounts.length === 0) {
+        return { account: null, newIndex: currentIndex };
     }
 
-    const limit = account.modelRateLimits[modelId];
-    const now = Date.now();
-    const waitMs = limit.resetTime ? Math.max(0, limit.resetTime - now) : 0;
+    // Clamp index to valid range
+    let index = currentIndex;
+    if (index >= accounts.length) {
+        index = 0;
+    }
 
-    return {
-        isRateLimited: limit.isRateLimited && waitMs > 0,
-        actualResetMs: limit.actualResetMs || null,
-        waitMs
-    };
+    // Get current account directly (activeIndex = current account)
+    const account = accounts[index];
+
+    if (isAccountUsable(account, modelId)) {
+        account.lastUsed = Date.now();
+        // Trigger save (don't await to avoid blocking)
+        if (onSave) onSave();
+        return { account, newIndex: index };
+    }
+
+    return { account: null, newIndex: index };
+}
+
+/**
+ * Check if we should wait for the current account's rate limit to reset.
+ *
+ * @param {Array} accounts - Array of account objects
+ * @param {number} currentIndex - Current account index
+ * @param {string} [modelId] - Model ID to check rate limits for
+ * @returns {{shouldWait: boolean, waitMs: number, account: Object|null}}
+ */
+export function shouldWaitForCurrentAccount(accounts, currentIndex, modelId = null) {
+    if (accounts.length === 0) {
+        return { shouldWait: false, waitMs: 0, account: null };
+    }
+
+    // Clamp index to valid range
+    let index = currentIndex;
+    if (index >= accounts.length) {
+        index = 0;
+    }
+
+    // Get current account directly (activeIndex = current account)
+    const account = accounts[index];
+
+    if (!account || account.isInvalid) {
+        return { shouldWait: false, waitMs: 0, account: null };
+    }
+
+    let waitMs = 0;
+
+    // Check model-specific limit
+    if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
+        const limit = account.modelRateLimits[modelId];
+        if (limit.isRateLimited && limit.resetTime) {
+            waitMs = limit.resetTime - Date.now();
+        }
+    }
+
+    // If wait time is within threshold, recommend waiting
+    if (waitMs > 0 && waitMs <= MAX_WAIT_BEFORE_ERROR_MS) {
+        return { shouldWait: true, waitMs, account };
+    }
+
+    return { shouldWait: false, waitMs: 0, account };
+}
+
+/**
+ * Pick an account with sticky selection preference.
+ * Prefers the current account for cache continuity.
+ *
+ * @param {Array} accounts - Array of account objects
+ * @param {number} currentIndex - Current account index
+ * @param {Function} onSave - Callback to save changes
+ * @param {string} [modelId] - Model ID to check rate limits for
+ * @returns {{account: Object|null, waitMs: number, newIndex: number}}
+ */
+export function pickStickyAccount(accounts, currentIndex, onSave, modelId = null) {
+    // First try to get the current sticky account
+    const { account: stickyAccount, newIndex: stickyIndex } = getCurrentStickyAccount(accounts, currentIndex, onSave, modelId);
+    if (stickyAccount) {
+        return { account: stickyAccount, waitMs: 0, newIndex: stickyIndex };
+    }
+
+    // Current account is rate-limited or invalid.
+    // CHECK IF OTHERS ARE AVAILABLE before deciding to wait.
+    const available = getAvailableAccounts(accounts, modelId);
+    if (available.length > 0) {
+        // Found a free account! Switch immediately.
+        const { account: nextAccount, newIndex } = pickNext(accounts, currentIndex, onSave, modelId);
+        if (nextAccount) {
+            logger.info(`[AccountManager] Switched to new account (failover): ${nextAccount.email}`);
+            return { account: nextAccount, waitMs: 0, newIndex };
+        }
+    }
+
+    // No other accounts available. Now checking if we should wait for current account.
+    const waitInfo = shouldWaitForCurrentAccount(accounts, currentIndex, modelId);
+    if (waitInfo.shouldWait) {
+        logger.info(`[AccountManager] Waiting ${formatDuration(waitInfo.waitMs)} for sticky account: ${waitInfo.account.email}`);
+        return { account: null, waitMs: waitInfo.waitMs, newIndex: currentIndex };
+    }
+
+    // Current account unavailable for too long/invalid, and no others available?
+    const { account: nextAccount, newIndex } = pickNext(accounts, currentIndex, onSave, modelId);
+    if (nextAccount) {
+        logger.info(`[AccountManager] Switched to new account for cache: ${nextAccount.email}`);
+    }
+    return { account: nextAccount, waitMs: 0, newIndex };
 }
