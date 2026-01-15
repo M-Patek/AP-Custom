@@ -1,201 +1,136 @@
 /**
- * Account Selection
+ * Account Storage
  *
- * Handles account picking logic (round-robin, sticky) for cache continuity.
- * All rate limit checks are model-specific.
+ * Handles loading and saving account configuration to disk.
  */
 
-import { MAX_WAIT_BEFORE_ERROR_MS } from '../constants.js';
-import { formatDuration } from '../utils/helpers.js';
+import { readFile, writeFile, mkdir, access } from 'fs/promises';
+import { constants as fsConstants } from 'fs';
+import { dirname } from 'path';
+import { ACCOUNT_CONFIG_PATH } from '../constants.js';
+import { getAuthStatus } from '../auth/database.js';
 import { logger } from '../utils/logger.js';
-import { clearExpiredLimits, getAvailableAccounts } from './rate-limits.js';
 
 /**
- * Check if an account is usable for a specific model
- * @param {Object} account - Account object
- * @param {string} modelId - Model ID to check
- * @returns {boolean} True if account is usable
+ * Load accounts from the config file
+ *
+ * @param {string} configPath - Path to the config file
+ * @returns {Promise<{accounts: Array, settings: Object, activeIndex: number}>}
  */
-function isAccountUsable(account, modelId) {
-    if (!account || account.isInvalid) return false;
+export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
+    try {
+        // Check if config file exists using async access
+        await access(configPath, fsConstants.F_OK);
+        const configData = await readFile(configPath, 'utf-8');
+        const config = JSON.parse(configData);
 
-    // WebUI: Skip disabled accounts
-    if (account.enabled === false) return false;
+        const accounts = (config.accounts || []).map(acc => ({
+            ...acc,
+            lastUsed: acc.lastUsed || null,
+            enabled: acc.enabled !== false, // Default to true if not specified
+            // Reset invalid flag on startup - give accounts a fresh chance to refresh
+            isInvalid: false,
+            invalidReason: null,
+            modelRateLimits: acc.modelRateLimits || {},
+            // New fields for subscription and quota tracking
+            subscription: acc.subscription || { tier: 'unknown', projectId: null, detectedAt: null },
+            quota: acc.quota || { models: {}, lastChecked: null }
+        }));
 
-    if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
-        const limit = account.modelRateLimits[modelId];
-        if (limit.isRateLimited && limit.resetTime > Date.now()) {
-            return false;
+        const settings = config.settings || {};
+        let activeIndex = config.activeIndex || 0;
+
+        // Clamp activeIndex to valid range
+        if (activeIndex >= accounts.length) {
+            activeIndex = 0;
         }
-    }
 
-    return true;
+        logger.info(`[AccountManager] Loaded ${accounts.length} account(s) from config`);
+
+        return { accounts, settings, activeIndex };
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            // No config file - return empty
+            logger.info('[AccountManager] No config file found. Using Antigravity database (single account mode)');
+        } else {
+            logger.error('[AccountManager] Failed to load config:', error.message);
+        }
+        return { accounts: [], settings: {}, activeIndex: 0 };
+    }
 }
 
 /**
- * Pick the next available account (fallback when current is unavailable).
+ * Load the default account from Antigravity's database
  *
- * @param {Array} accounts - Array of account objects
- * @param {number} currentIndex - Current account index
- * @param {Function} onSave - Callback to save changes
- * @param {string} [modelId] - Model ID to check rate limits for
- * @returns {{account: Object|null, newIndex: number}} The next available account and new index
+ * @param {string} dbPath - Optional path to the database
+ * @returns {{accounts: Array, tokenCache: Map}}
  */
-export function pickNext(accounts, currentIndex, onSave, modelId = null) {
-    clearExpiredLimits(accounts);
+export function loadDefaultAccount(dbPath) {
+    try {
+        const authData = getAuthStatus(dbPath);
+        if (authData?.apiKey) {
+            const account = {
+                email: authData.email || 'default@antigravity',
+                source: 'database',
+                lastUsed: null,
+                modelRateLimits: {}
+            };
 
-    const available = getAvailableAccounts(accounts, modelId);
-    if (available.length === 0) {
-        return { account: null, newIndex: currentIndex };
-    }
+            const tokenCache = new Map();
+            tokenCache.set(account.email, {
+                token: authData.apiKey,
+                extractedAt: Date.now()
+            });
 
-    // Clamp index to valid range
-    let index = currentIndex;
-    if (index >= accounts.length) {
-        index = 0;
-    }
+            logger.info(`[AccountManager] Loaded default account: ${account.email}`);
 
-    // Find next available account starting from index AFTER current
-    for (let i = 1; i <= accounts.length; i++) {
-        const idx = (index + i) % accounts.length;
-        const account = accounts[idx];
-
-        if (isAccountUsable(account, modelId)) {
-            account.lastUsed = Date.now();
-
-            const position = idx + 1;
-            const total = accounts.length;
-            logger.info(`[AccountManager] Using account: ${account.email} (${position}/${total})`);
-
-            // Trigger save (don't await to avoid blocking)
-            if (onSave) onSave();
-
-            return { account, newIndex: idx };
+            return { accounts: [account], tokenCache };
         }
+    } catch (error) {
+        logger.error('[AccountManager] Failed to load default account:', error.message);
     }
 
-    return { account: null, newIndex: currentIndex };
+    return { accounts: [], tokenCache: new Map() };
 }
 
 /**
- * Get the current account without advancing the index (sticky selection).
+ * Save account configuration to disk
  *
+ * @param {string} configPath - Path to the config file
  * @param {Array} accounts - Array of account objects
- * @param {number} currentIndex - Current account index
- * @param {Function} onSave - Callback to save changes
- * @param {string} [modelId] - Model ID to check rate limits for
- * @returns {{account: Object|null, newIndex: number}} The current account and index
+ * @param {Object} settings - Settings object
+ * @param {number} activeIndex - Current active account index
  */
-export function getCurrentStickyAccount(accounts, currentIndex, onSave, modelId = null) {
-    clearExpiredLimits(accounts);
+export async function saveAccounts(configPath, accounts, settings, activeIndex) {
+    try {
+        // Ensure directory exists
+        const dir = dirname(configPath);
+        await mkdir(dir, { recursive: true });
 
-    if (accounts.length === 0) {
-        return { account: null, newIndex: currentIndex };
+        const config = {
+            accounts: accounts.map(acc => ({
+                email: acc.email,
+                source: acc.source,
+                enabled: acc.enabled !== false, // Persist enabled state
+                dbPath: acc.dbPath || null,
+                refreshToken: acc.source === 'oauth' ? acc.refreshToken : undefined,
+                apiKey: acc.source === 'manual' ? acc.apiKey : undefined,
+                projectId: acc.projectId || undefined,
+                addedAt: acc.addedAt || undefined,
+                isInvalid: acc.isInvalid || false,
+                invalidReason: acc.invalidReason || null,
+                modelRateLimits: acc.modelRateLimits || {},
+                lastUsed: acc.lastUsed,
+                // Persist subscription and quota data
+                subscription: acc.subscription || { tier: 'unknown', projectId: null, detectedAt: null },
+                quota: acc.quota || { models: {}, lastChecked: null }
+            })),
+            settings: settings,
+            activeIndex: activeIndex
+        };
+
+        await writeFile(configPath, JSON.stringify(config, null, 2));
+    } catch (error) {
+        logger.error('[AccountManager] Failed to save config:', error.message);
     }
-
-    // Clamp index to valid range
-    let index = currentIndex;
-    if (index >= accounts.length) {
-        index = 0;
-    }
-
-    // Get current account directly (activeIndex = current account)
-    const account = accounts[index];
-
-    if (isAccountUsable(account, modelId)) {
-        account.lastUsed = Date.now();
-        // Trigger save (don't await to avoid blocking)
-        if (onSave) onSave();
-        return { account, newIndex: index };
-    }
-
-    return { account: null, newIndex: index };
-}
-
-/**
- * Check if we should wait for the current account's rate limit to reset.
- *
- * @param {Array} accounts - Array of account objects
- * @param {number} currentIndex - Current account index
- * @param {string} [modelId] - Model ID to check rate limits for
- * @returns {{shouldWait: boolean, waitMs: number, account: Object|null}}
- */
-export function shouldWaitForCurrentAccount(accounts, currentIndex, modelId = null) {
-    if (accounts.length === 0) {
-        return { shouldWait: false, waitMs: 0, account: null };
-    }
-
-    // Clamp index to valid range
-    let index = currentIndex;
-    if (index >= accounts.length) {
-        index = 0;
-    }
-
-    // Get current account directly (activeIndex = current account)
-    const account = accounts[index];
-
-    if (!account || account.isInvalid) {
-        return { shouldWait: false, waitMs: 0, account: null };
-    }
-
-    let waitMs = 0;
-
-    // Check model-specific limit
-    if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
-        const limit = account.modelRateLimits[modelId];
-        if (limit.isRateLimited && limit.resetTime) {
-            waitMs = limit.resetTime - Date.now();
-        }
-    }
-
-    // If wait time is within threshold, recommend waiting
-    if (waitMs > 0 && waitMs <= MAX_WAIT_BEFORE_ERROR_MS) {
-        return { shouldWait: true, waitMs, account };
-    }
-
-    return { shouldWait: false, waitMs: 0, account };
-}
-
-/**
- * Pick an account with sticky selection preference.
- * Prefers the current account for cache continuity.
- *
- * @param {Array} accounts - Array of account objects
- * @param {number} currentIndex - Current account index
- * @param {Function} onSave - Callback to save changes
- * @param {string} [modelId] - Model ID to check rate limits for
- * @returns {{account: Object|null, waitMs: number, newIndex: number}}
- */
-export function pickStickyAccount(accounts, currentIndex, onSave, modelId = null) {
-    // First try to get the current sticky account
-    const { account: stickyAccount, newIndex: stickyIndex } = getCurrentStickyAccount(accounts, currentIndex, onSave, modelId);
-    if (stickyAccount) {
-        return { account: stickyAccount, waitMs: 0, newIndex: stickyIndex };
-    }
-
-    // Current account is rate-limited or invalid.
-    // CHECK IF OTHERS ARE AVAILABLE before deciding to wait.
-    const available = getAvailableAccounts(accounts, modelId);
-    if (available.length > 0) {
-        // Found a free account! Switch immediately.
-        const { account: nextAccount, newIndex } = pickNext(accounts, currentIndex, onSave, modelId);
-        if (nextAccount) {
-            logger.info(`[AccountManager] Switched to new account (failover): ${nextAccount.email}`);
-            return { account: nextAccount, waitMs: 0, newIndex };
-        }
-    }
-
-    // No other accounts available. Now checking if we should wait for current account.
-    const waitInfo = shouldWaitForCurrentAccount(accounts, currentIndex, modelId);
-    if (waitInfo.shouldWait) {
-        logger.info(`[AccountManager] Waiting ${formatDuration(waitInfo.waitMs)} for sticky account: ${waitInfo.account.email}`);
-        return { account: null, waitMs: waitInfo.waitMs, newIndex: currentIndex };
-    }
-
-    // Current account unavailable for too long/invalid, and no others available?
-    const { account: nextAccount, newIndex } = pickNext(accounts, currentIndex, onSave, modelId);
-    if (nextAccount) {
-        logger.info(`[AccountManager] Switched to new account for cache: ${nextAccount.email}`);
-    }
-    return { account: nextAccount, waitMs: 0, newIndex };
 }
