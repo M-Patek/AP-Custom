@@ -1,58 +1,107 @@
-// 修复版启动入口
-import * as serverModule from './server.js';
+/**
+ * Antigravity Claude Proxy
+ * Entry point - starts the proxy server
+ */
 
-console.log('🔍 正在智能分析 server.js 导出内容...');
+import app from './server.js';
+import { DEFAULT_PORT } from './constants.js';
+import { logger } from './utils/logger.js';
+import path from 'path';
+import os from 'os';
 
-function start() {
-    try {
-        const defaultExport = serverModule.default;
-        const startServer = serverModule.startServer;
-        const app = serverModule.app;
-        const PORT = process.env.PORT || 8080;
+// Parse command line arguments
+const args = process.argv.slice(2);
+const isDebug = args.includes('--debug') || process.env.DEBUG === 'true';
+const isFallbackEnabled = args.includes('--fallback') || process.env.FALLBACK === 'true';
 
-        // 策略 1: 默认导出就是 Express App 实例 (有 .listen 方法)
-        if (defaultExport && typeof defaultExport.listen === 'function') {
-            console.log('✅ 检测到 Express App 实例 (default)，正在启动监听...');
-            defaultExport.listen(PORT, () => {
-                console.log(`🚀 Server running on http://localhost:${PORT}`);
-            });
-            return;
-        }
+// Initialize logger
+logger.setDebug(isDebug);
 
-        // 策略 2: 导出了名为 app 的实例
-        if (app && typeof app.listen === 'function') {
-            console.log('✅ 检测到 Express App 实例 (named export)，正在启动监听...');
-            app.listen(PORT, () => {
-                console.log(`🚀 Server running on http://localhost:${PORT}`);
-            });
-            return;
-        }
-
-        // 策略 3: 默认导出是一个启动函数 (且不是 App 实例)
-        if (typeof defaultExport === 'function') {
-            console.log('✅ 检测到启动函数 (default)，正在执行...');
-            // 注意：这里不再 await，防止它是同步函数或者返回非 Promise
-            const result = defaultExport(); 
-            if (result instanceof Promise) {
-                result.catch(err => console.error('❌ 启动函数报错:', err));
-            }
-            return;
-        }
-
-        // 策略 4: 导出了名为 startServer 的函数
-        if (typeof startServer === 'function') {
-            console.log('✅ 检测到 startServer 函数，正在执行...');
-            startServer();
-            return;
-        }
-
-        console.error('❌ 无法识别启动方式！server.js 似乎没有导出 app 或启动函数。');
-        console.log('导出内容概览:', Object.keys(serverModule));
-
-    } catch (error) {
-        console.error('💥 启动失败:', error);
-    }
+if (isDebug) {
+    logger.debug('Debug mode enabled');
 }
 
-// 执行启动逻辑
-start();
+if (isFallbackEnabled) {
+    logger.info('Model fallback mode enabled');
+}
+
+// Export fallback flag for server to use
+export const FALLBACK_ENABLED = isFallbackEnabled;
+
+const PORT = process.env.PORT || DEFAULT_PORT;
+
+// Home directory for account storage
+const HOME_DIR = os.homedir();
+const CONFIG_DIR = path.join(HOME_DIR, '.antigravity-claude-proxy');
+
+app.listen(PORT, () => {
+    // Clear console for a clean start
+    console.clear();
+
+    const border = '║';
+    // align for 2-space indent (60 chars), align4 for 4-space indent (58 chars)
+    const align = (text) => text + ' '.repeat(Math.max(0, 60 - text.length));
+    const align4 = (text) => text + ' '.repeat(Math.max(0, 58 - text.length));
+    
+    // Build Control section dynamically
+    let controlSection = '║  Control:                                                    ║\n';
+    if (!isDebug) {
+        controlSection += '║    --debug            Enable debug logging                   ║\n';
+    }
+    if (!isFallbackEnabled) {
+        controlSection += '║    --fallback         Enable model fallback on quota exhaust ║\n';
+    }
+    controlSection += '║    Ctrl+C             Stop server                            ║';
+
+    // Build status section if any modes are active
+    let statusSection = '';
+    if (isDebug || isFallbackEnabled) {
+        statusSection = '║                                                              ║\n';
+        statusSection += '║  Active Modes:                                               ║\n';
+        if (isDebug) {
+            statusSection += '║    ✓ Debug mode enabled                                      ║\n';
+        }
+        if (isFallbackEnabled) {
+            statusSection += '║    ✓ Model fallback enabled                                  ║\n';
+        }
+    }
+
+    logger.log(`
+╔══════════════════════════════════════════════════════════════╗
+║           Antigravity Claude Proxy Server                    ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+${border}  ${align(`Server and WebUI running at: http://localhost:${PORT}`)}${border}
+${statusSection}║                                                              ║
+${controlSection}
+║                                                              ║
+║  Endpoints:                                                  ║
+║    POST /v1/messages         - Anthropic Messages API        ║
+║    GET  /v1/models           - List available models         ║
+║    GET  /health              - Health check                  ║
+║    GET  /account-limits      - Account status & quotas       ║
+║    POST /refresh-token       - Force token refresh           ║
+║                                                              ║
+${border}  ${align(`Configuration:`)}${border}
+${border}    ${align4(`Storage: ${CONFIG_DIR}`)}${border}
+║                                                              ║
+║  Usage with Claude Code:                                     ║
+${border}    ${align4(`export ANTHROPIC_BASE_URL=http://localhost:${PORT}`)}${border}
+║    export ANTHROPIC_API_KEY=dummy                            ║
+║    claude                                                    ║
+║                                                              ║
+║  Add Google accounts:                                        ║
+║    npm run accounts                                          ║
+║                                                              ║
+║  Prerequisites (if no accounts configured):                  ║
+║    - Antigravity must be running                             ║
+║    - Have a chat panel open in Antigravity                   ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+  `);
+    
+    logger.success(`Server started successfully on port ${PORT}`);
+    if (isDebug) {
+        logger.warn('Running in DEBUG mode - verbose logs enabled');
+    }
+});
