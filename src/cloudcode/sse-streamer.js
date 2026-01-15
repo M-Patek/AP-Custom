@@ -7,6 +7,7 @@
 
 import crypto from 'crypto';
 import { MIN_SIGNATURE_LENGTH, getModelFamily } from '../constants.js';
+import { EmptyResponseError } from '../errors.js';
 import { cacheSignature, cacheThinkingSignature } from '../format/signature-cache.js';
 import { logger } from '../utils/logger.js';
 
@@ -26,7 +27,7 @@ export async function* streamSSEResponse(response, originalModel) {
     let inputTokens = 0;
     let outputTokens = 0;
     let cacheReadTokens = 0;
-    let stopReason = 'end_turn';
+    let stopReason = null;
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -208,11 +209,44 @@ export async function* streamSSEResponse(response, originalModel) {
                                 partial_json: JSON.stringify(part.functionCall.args || {})
                             }
                         };
+                    } else if (part.inlineData) {
+                        // Handle image content from Google format
+                        if (currentBlockType === 'thinking' && currentThinkingSignature) {
+                            yield {
+                                type: 'content_block_delta',
+                                index: blockIndex,
+                                delta: { type: 'signature_delta', signature: currentThinkingSignature }
+                            };
+                            currentThinkingSignature = '';
+                        }
+                        if (currentBlockType !== null) {
+                            yield { type: 'content_block_stop', index: blockIndex };
+                            blockIndex++;
+                        }
+                        currentBlockType = 'image';
+
+                        // Emit image block as a complete block
+                        yield {
+                            type: 'content_block_start',
+                            index: blockIndex,
+                            content_block: {
+                                type: 'image',
+                                source: {
+                                    type: 'base64',
+                                    media_type: part.inlineData.mimeType,
+                                    data: part.inlineData.data
+                                }
+                            }
+                        };
+
+                        yield { type: 'content_block_stop', index: blockIndex };
+                        blockIndex++;
+                        currentBlockType = null;
                     }
                 }
 
-                // Check finish reason
-                if (firstCandidate.finishReason) {
+                // Check finish reason (only if not already set by tool_use)
+                if (firstCandidate.finishReason && !stopReason) {
                     if (firstCandidate.finishReason === 'MAX_TOKENS') {
                         stopReason = 'max_tokens';
                     } else if (firstCandidate.finishReason === 'STOP') {
@@ -226,39 +260,10 @@ export async function* streamSSEResponse(response, originalModel) {
         }
     }
 
-    // Handle no content received
+    // Handle no content received - throw error to trigger retry in streaming-handler
     if (!hasEmittedStart) {
-        logger.warn('[CloudCode] No content parts received, emitting empty message');
-        yield {
-            type: 'message_start',
-            message: {
-                id: messageId,
-                type: 'message',
-                role: 'assistant',
-                content: [],
-                model: originalModel,
-                stop_reason: null,
-                stop_sequence: null,
-                usage: {
-                    input_tokens: inputTokens - cacheReadTokens,
-                    output_tokens: 0,
-                    cache_read_input_tokens: cacheReadTokens,
-                    cache_creation_input_tokens: 0
-                }
-            }
-        };
-
-        yield {
-            type: 'content_block_start',
-            index: 0,
-            content_block: { type: 'text', text: '' }
-        };
-        yield {
-            type: 'content_block_delta',
-            index: 0,
-            delta: { type: 'text_delta', text: '[No response received from API]' }
-        };
-        yield { type: 'content_block_stop', index: 0 };
+        logger.warn('[CloudCode] No content parts received, throwing for retry');
+        throw new EmptyResponseError('No content parts received from API');
     } else {
         // Close any open block
         if (currentBlockType !== null) {
@@ -276,7 +281,7 @@ export async function* streamSSEResponse(response, originalModel) {
     // Emit message_delta and message_stop
     yield {
         type: 'message_delta',
-        delta: { stop_reason: stopReason, stop_sequence: null },
+        delta: { stop_reason: stopReason || 'end_turn', stop_sequence: null },
         usage: {
             output_tokens: outputTokens,
             cache_read_input_tokens: cacheReadTokens,
